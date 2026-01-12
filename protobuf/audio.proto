@@ -1,0 +1,19 @@
+syntax = "proto3";
+
+package audio;
+option go_package = "protobuf/;protobuf";
+
+service SpeechService {
+  // bidirectional streaming for real-time feedback
+  rpc TranscribeStream(stream AudioChunk) returns (stream Transcript) {}
+}
+
+message AudioChunk {
+  bytes data = 1;
+}
+
+message Transcript {
+  string text = 1;
+  bool warning = 2;
+  repeated string detected_keywords = 3;
+}

@@ -1,0 +1,17 @@
+{
+    "whisper": {
+        "model": "/home/pr/repo/whisper.cpp/models/ggml-base.en.bin"
+    },
+    "keywords": {
+        "forbidden": {
+            "en": [
+                "train",
+                "transfer",
+                "money"
+            ]
+        }
+    },
+    "timer_and_ticker": {
+        "sending_ticker": 60
+    }
+}

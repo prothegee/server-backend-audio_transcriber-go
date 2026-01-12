@@ -1,0 +1,9 @@
+{
+    "listener": {
+        "address": "0.0.0.0",
+        "port": 20202
+    },
+    "timer_and_ticker": {
+        "audio_processing": 3000
+    }
+}
