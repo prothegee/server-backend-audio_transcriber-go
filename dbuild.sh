@@ -1,13 +1,9 @@
-#!/usr/bin/sh
+#!/usr/bin/bash
 set -e;
 
 mkdir -p bin;
 
 export CURRENT_DIR="$(pwd)";
-
-# change this as you machine environment
-export C_INCLUDE_PATH="$HOME/include";
-export LIBRARY_PATH="$HOME/lib";
 
 # grpc_server
 export GRPC_SERVER_SOURCE="$CURRENT_DIR/cmd/grpc_server";

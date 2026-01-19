@@ -1,6 +1,6 @@
 {
     "whisper": {
-        "model": "/home/pr/repo/whisper.cpp/models/ggml-base.en.bin"
+        "model": "/path/to/llm/ggml-base.en.bin"
     },
     "keywords": {
         "forbidden": {
@@ -11,7 +11,11 @@
             ]
         }
     },
-    "timer_and_ticker": {
-        "sending_ticker": 60
+    "processing": {
+        "sending_ticker": 60,
+        "sample_rate": 16000.00,
+        "frames_per_buf": 512,
+        "audio_channels": 1,
+        "audio_buf_channel_size": 1024
     }
 }

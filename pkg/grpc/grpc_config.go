@@ -10,9 +10,10 @@ type GrpcConfig struct {
 		Address string `json:"address"`
 		Port int `json:"port"`
 	} `json:"listener"`
-	TimerAndTicker struct {
+	Processing struct {
 		AudioProcessing int `json:"audio_processing"` // in ms
-	} `json:"timer_and_ticker"`
+		TranscribeStreamChunkSize int `json:"transcribe_stream_chunk_size"`
+	} `json:"processing"`
 }
 
 func GrpcConfigLoad(fp string) (GrpcConfig, error) {

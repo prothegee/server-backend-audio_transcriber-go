@@ -10,6 +10,7 @@ service SpeechService {
 
 message AudioChunk {
   bytes data = 1;
+  string session_id = 2; // uuid v7 for user session
 }
 
 message Transcript {
