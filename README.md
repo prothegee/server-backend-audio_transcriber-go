@@ -21,10 +21,13 @@ After couple attempts, the violation appear again, but now we realized that viol
 
 ---
 
-idea flow
+idea flow:
+
 1. > client/end-user send the audio -> server check & processing the audio -> send response
 
 2. > if the audio process contain *forbidden* keywords -> do something (warn, err, etc.)
+
+this looks simple, but you now that when we configuring, build, and test our software it required something else in the process
 
 <br>
 
@@ -58,68 +61,83 @@ idea flow
 
 2. if `config.audio.json` & `config.grpc.json` doesn't exists, copy and paste those file from .json.template to .json
 
-3. you need to build and expose the library from [whisper.cpp](https://github.com/ggerganov/whisper.cpp) and install the model:
-    - after the installation, you need to export the include path and include lib directory, see [dbuild.sh](./dbuild.sh#L9)
-    - without that you can't run this project
-    - for the ml whisper model, you can configure in [whisper.model field](./config.audio.json.template#L3)
+3. you need to build and expose the library from [whisper](https://github.com/ggml-org/whisper.cpp) and install the model:
+    - after the installation, you need to export the include path and include lib directory
+    - you may required to export you `LD_LIBRARY_PATH` if you use custom path, i.e.:
+    ```sh
+    # when you define `-DCMAKE_INSTALL_PREFIX=~/` when build whisper library
+    # this will add bin, lib, include, share dir to the home directory after build and install `cmake --install build/path
+    export LD_LIBRARY_PATH="$LD_LIBRARY_PATH:$HOME/lib";
+    export C_INCLUDE_PATH="$C_INCLUDE_PATH:$HOME/include"
+    ```
     
-4. to run the server or client:
-    - for instance without defining a custom port use:
-        - [drun-grpc_server.sh](./drun-grpc_server.sh)
-        - [drun-audio_client.sh](./drun-audio_client.sh)
-    - if you want to use manual asignin port use:
-        - [drun-grpc_server-by_port.sh](./drun-grpc_server-by_port.sh)
-        - [drun-audio_client-by_port.sh](./drun-audio_client-by_port.sh)
-        
-5. use proper model and check the forbidden keywords
+4. use [drun-audio_client.sh](./drun-audio_client.sh) to run the client & use [drun-grpc_server.sh](./drun-grpc_server.sh)
+ 
+5. use proper model and check the forbidden keywords, a base english model from ggml is still capable to detect specific keyword, you also may adjust this as you need, see [whisper model field](./config.audio.json.template#L3) 
 
 <br>
 
 ---
 
-## problem that we might encounter
+## key features
 
-1. hardware resource exhaustion:
-
-    1. try to adjust:
-        - `sending_ticker` in audio_client json config
-        - `audio_processing` in grpc_server json config
-        
-    2. set the ammount of:
-        - audio_client:
-            - `framesPerBuf`
-            - `audioBufferChannelSize`
-            
-```
-currently by default if you using *by_port instance,
-on 12 threads able to run 4 client and 4 server
-```
-![fig_1](./docs/img/fig_1.png)
-
-<!-- a record doc for staging server, stress test or any actual report -->
+- real-time design
+- modular structure
+- informative logging
+- active buffer checking
+- keywords awareness check
+- seperate goroutine for send/receive
 
 <br>
 
 ---
 
-### memory heap profiler report
+## trade off
 
-- [grpc server pprof](./docs/pprof_rep-grpc_server.md)
-- [audio client pprof](./docs/pprof_rep-audio_client.md)
+1. concurrency vs thread safety:
+    - paralellism use worker pool
+    - since it using whisper library it's not thread-safe using mutex approach
+
+2. latency vs transcription accuracy:
+    - both audio_client & grpc_server are collecting ~1 second audio before sent & processed
+    - better throughput rather than latency
+
+3. resposiveness vs data lost:
+    - audio chanel and request use limited buffer:
+        - preferably drop rather than block
+        - responsive on high load but audio burst could make grpc server slowdown
 
 <br>
 
 ---
 
-### extra
+## stress test
 
-@prothegee
-```
-if you have better improvement both from the pogram and architecture, I would love to know/read that!
-```
+below is a 2 hour stress test using 12 threads cpu and 32GB of RAM
+
+![fig1](./docs/img/fig_1.png)
+![fig2](./docs/img/fig_2.png)
+![fig3](./docs/img/fig_3.png)
 
 <br>
 
 ---
+
+## extra
+
+`if you had better options/approach, I would love to read/see that` - @prothegee
+
+<br>
+
+---
+
+<!--
+seperation concern for larger project:
+1. worker & queue:
+    - use 1 worker and 1 queue for each
+2. use small chunk to send often audio data for `more realtime`
+3. monitoring & backpressure handling
+4. tight security management
+-->
 
 ###### end of readme
