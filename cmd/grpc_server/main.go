@@ -11,7 +11,9 @@ import (
 	// _ "net/http/pprof"
 	"os"
 	"os/signal"
+	"runtime"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 
@@ -24,83 +26,111 @@ import (
 )
 
 var (
-	forbiddenEnKeywords []string
-	audioProcessingMs int
+	forbiddenEnKeywords       []string
+	audioProcessingMs         int
+	transcribeStreamChunkSize int
 )
 
 // transcribeRequest represents a request to transcribe audio
 type transcribeRequest struct {
-	Audio []byte
-	Resp chan<- *transcribeResult
-	Ctx context.Context
+	Audio     []byte
+	Resp      chan<- *transcribeResult
+	Ctx       context.Context
+	SessionID string
 }
 
 // transcribeResult is the result of transcription
 type transcribeResult struct {
-	Text string
-	Warning bool
+	Text     string
+	Warning  bool
 	Keywords []string
-	Err error
+	Err      error
 }
 
-// whisperWorker runs in a single goroutine and processes transcription requests
-func whisperWorker(modelPath string, reqChan <-chan *transcribeRequest) {
-	model, err := whisper.New(modelPath)
-	if err != nil {
-		log.Fatalf("failed to load whisper model: %v", err)
-	}
-	defer model.Close()
+// whisperWorkerPool initializes a pool of workers to process requests concurrently
+// we pass a *sync.Mutex to ensure only one inference runs at a time, prevent external lib SIGSEGV
+func whisperWorkerPool(model whisper.Model, reqChan <-chan *transcribeRequest, numWorkers int, inferenceMu *sync.Mutex) {
+	for i := 0; i < numWorkers; i++ {
+		go func(workerID int) {
+			log.Printf("worker #%d started", workerID)
 
-	ctx, err := model.NewContext()
-	if err != nil {
-		log.Fatalf("failed to create whisper context: %v", err)
-	}
+			// context per worker
+			ctx, err := model.NewContext()
+			if err != nil {
+				log.Fatalf("worker #%d failed to create whisper context: %v", workerID, err)
+			}
 
-	ctx.SetLanguage("auto")
-	ctx.SetTranslate(false)
+			ctx.SetLanguage("auto")
+			ctx.SetTranslate(false)
 
-	log.Printf("whisper model loaded: %s", modelPath)
+			for req := range reqChan {
+				select {
+				case <-req.Ctx.Done():
+					log.Printf("[worker #%d] context cancelled for session %s", workerID, req.SessionID)
+					continue
+				default:
+					// proceed
+				}
 
-	for req := range reqChan {
-		select {
-		case <-req.Ctx.Done(): {
-			req.Resp <- &transcribeResult{Err: req.Ctx.Err()}
-			continue
-		}
-		default: {
-			// proceed with transcription
-		}
-		}
+				// cpu bound: convert bytes to floats
+				// - parallel safe
+				// - do outside the lock to maximize concurrency
+				audioFloats, err := bytesToFloat32(req.Audio)
+				if err != nil {
+					select {
+					case req.Resp <- &transcribeResult{Err: fmt.Errorf("audio conversion: %w", err)}:
+					default:
+						log.Printf("[worker #%d] resp chan full for session %s", workerID, req.SessionID)
+					}
+					continue
+				}
 
-		audioFloats, err := bytesToFloat32(req.Audio)
-		if err != nil {
-			req.Resp <- &transcribeResult{Err: fmt.Errorf("audio conversion: %w", err)}
-			continue
-		}
+				var result strings.Builder
+				segmentCallback := func(segment whisper.Segment) {
+					result.WriteString(segment.Text)
+				}
 
-		var result strings.Builder
-		segmentCallback := func(segment whisper.Segment) {
-			result.WriteString(segment.Text)
-		}
+				// cgo bound: inference (critical)
+				// - gglm whisper is not thread safe
+				// - concurrent process calls on the same backend state
+				inferenceMu.Lock()
+				err = ctx.Process(audioFloats, nil, segmentCallback, nil)
+				inferenceMu.Unlock()
 
-		err = ctx.Process(audioFloats, nil, segmentCallback, nil)
-		if err != nil {
-			req.Resp <- &transcribeResult{Err: fmt.Errorf("whisper process: %w", err)}
-			continue
-		}
+				if err != nil {
+					select {
+					case req.Resp <- &transcribeResult{Err: fmt.Errorf("whisper process: %w", err)}:
+					default:
+						log.Printf("[worker #%d] resp chan full for session %s", workerID, req.SessionID)
+					}
+					continue
+				}
 
-		text := strings.TrimSpace(result.String())
-		if text == "" || text == "BLANK_AUDIO" {
-			req.Resp <- &transcribeResult{}
-			continue
-		}
+				text := strings.TrimSpace(result.String())
+				
+				if text == "" || text == "BLANK_AUDIO" || len(text) < 2 {
+					select {
+					case req.Resp <- &transcribeResult{}:
+					default:
+					}
+					continue
+				}
 
-		hasKeywords, found := containsKeywords(text, forbiddenEnKeywords)
-		req.Resp <- &transcribeResult{
-			Text: text,
-			Warning: hasKeywords,
-			Keywords: found,
-		}
+				hasKeywords, found := containsKeywords(text, forbiddenEnKeywords)
+				res := &transcribeResult{
+					Text:     text,
+					Warning:  hasKeywords,
+					Keywords: found,
+				}
+
+				// send result, if fail just log
+				select {
+				case req.Resp <- res:
+				default:
+					log.Printf("[worker #%d] failed to send result (chan full) for session %s", workerID, req.SessionID)
+				}
+			}
+		}(i)
 	}
 }
 
@@ -133,125 +163,119 @@ type server struct {
 }
 
 func (s *server) TranscribeStream(stream pb.SpeechService_TranscribeStreamServer) error {
-	const chunkSize = 32000
 	var buffer bytes.Buffer
+	currentSessionID := "unknown-session"
 
 	ctx, cancel := context.WithCancel(stream.Context())
 	defer cancel()
 
 	feedbackChan := make(chan *pb.Transcript, 50)
 
-	log.Printf("real-time audio transcriber stream started")
+	log.Printf("new client connected")
 
 	// feedback sender
 	go func() {
 		defer close(feedbackChan)
 		for {
 			select {
-			case <-ctx.Done(): {
+			case <-ctx.Done():
 				return
-			}
-			case fb, ok := <-feedbackChan: {
+			case fb, ok := <-feedbackChan:
 				if !ok {
 					return
 				}
 				if err := stream.Send(fb); err != nil {
-					log.Printf("send feedback error: %v", err)
+					log.Printf("[%s] send feedback error: %v", currentSessionID, err)
 					return
 				}
-			}
 			}
 		}
 	}()
 
-	// audio processor
+	// audio processor trigger
 	processTicker := time.NewTicker(time.Duration(audioProcessingMs) * time.Millisecond)
 	defer processTicker.Stop()
 
 	go func() {
 		for {
 			select {
-			case <-ctx.Done(): {
+			case <-ctx.Done():
 				return
-			}
-			case <-processTicker.C: {
-				if buffer.Len() >= chunkSize {
-					audioData := make([]byte, chunkSize)
-					n, _ := buffer.Read(audioData)
-					if n == 0 {
+			case <-processTicker.C:
+				if buffer.Len() > 0 {
+					audioData := buffer.Bytes()
+
+					if len(audioData) == 0 {
 						continue
 					}
+
+					dataToSend := make([]byte, len(audioData))
+					copy(dataToSend, audioData)
+					buffer.Reset()
 
 					respChan := make(chan *transcribeResult, 1)
 					req := &transcribeRequest{
-						Audio: audioData,
-						Resp: respChan,
-						Ctx: ctx,
+						Audio:     dataToSend,
+						Resp:      respChan,
+						Ctx:       ctx,
+						SessionID: currentSessionID,
 					}
 
 					select {
-					case s.reqChan <- req: {
+					case s.reqChan <- req:
 						// request queued
-					}
-					case <-ctx.Done(): {
+					case <-ctx.Done():
 						return
-					}
-					case <-time.After(100 * time.Millisecond): {
-						log.Print("dropping chunk: worker busy")
+					default:
+						log.Printf("[%s] dropping chunk: workers busy", currentSessionID)
 						continue
 					}
-					}
 
-					go func() {
+					// listen for response in background
+					go func(sessionID string) {
 						var res *transcribeResult
 						select {
-						case res = <-respChan: {
+						case res = <-respChan:
 							// got result
-						}
-						case <-ctx.Done(): {
+						case <-ctx.Done():
 							return
-						}
-						case <-time.After(10 * time.Second): {
-							res = &transcribeResult{Err: fmt.Errorf("transcription timeout")}
-						}
+						case <-time.After(15 * time.Second):
+							log.Printf("[%s] transcription timeout", sessionID)
+							return
 						}
 
 						if res.Err != nil {
-							log.Printf("transcription error: %v", res.Err)
+							log.Printf("[%s] transcription error: %v", sessionID, res.Err)
 							return
 						}
 
 						var fb *pb.Transcript
 						if res.Warning {
 							fb = &pb.Transcript{
-								Text: fmt.Sprintf("detected forbidden keyword: %v - '%s'", res.Keywords, res.Text),
-								Warning: true,
+								Text:             fmt.Sprintf("detected forbidden keyword: %v - '%s'", res.Keywords, res.Text),
+								Warning:          true,
 								DetectedKeywords: res.Keywords,
 							}
-							log.Printf("forbidden keywords detected: %v", res.Keywords)
+							log.Printf("[%s] forbidden keywords detected: %v", sessionID, res.Keywords)
 						} else if res.Text != "" {
 							fb = &pb.Transcript{
-								Text: fmt.Sprintf("ok: '%s'", res.Text),
+								Text:    fmt.Sprintf("ok: '%s'", res.Text),
 								Warning: false,
 							}
+							log.Printf("[%s] processed: '%s'", sessionID, res.Text)
 						}
 
 						if fb != nil {
 							select {
-							case feedbackChan <- fb: {
-								// sent
-							}
-							case <-ctx.Done(): {
+							case feedbackChan <- fb:
+							case <-ctx.Done():
 								return
-							}
-							case <-time.After(100 * time.Millisecond): {
-								log.Print("timeout sending feedback")
-							}
+							default:
+								log.Printf("[%s] timeout sending feedback", sessionID)
 							}
 						}
-					}()
+					}(currentSessionID)
 				}
-			}
 			}
 		}
 	}()
@@ -259,23 +283,36 @@ func (s *server) TranscribeStream(stream pb.SpeechService_TranscribeStreamServer
 	// receive audio chunks from client
 	for {
 		select {
-		case <-ctx.Done(): {
+		case <-ctx.Done():
 			return nil
-		}
-		default: {
+		default:
 			chunk, err := stream.Recv()
 			if err != nil {
 				if err.Error() == "EOF" {
-					log.Print("client disconnected")
+					log.Printf("[%s] client disconnected", currentSessionID)
 					return nil
 				}
+				log.Printf("[%s] stream recv error: %v", currentSessionID, err)
 				return err
 			}
-			buffer.Write(chunk.Data)
-			if buffer.Len() > chunkSize*2 {
-				buffer.Next(buffer.Len() - chunkSize)
+
+			// ignore empty data
+			if len(chunk.Data) == 0 {
+				continue
 			}
-		}
+
+			// update session id if present
+			if chunk.SessionId != "" && currentSessionID == "unknown-session" {
+				currentSessionID = chunk.SessionId
+				log.Printf("session identified: %s", currentSessionID)
+			}
+
+			buffer.Write(chunk.Data)
+
+			if buffer.Len() > transcribeStreamChunkSize*10 {
+				log.Printf("[%s] buffer overflow, resetting", currentSessionID)
+				buffer.Reset()
+			}
 		}
 	}
 }
@@ -291,18 +328,33 @@ func main() {
 	}
 
 	forbiddenEnKeywords = audioCfg.Keywords.Forbidden.En
-	audioProcessingMs = grpcCfg.TimerAndTicker.AudioProcessing
+	audioProcessingMs = grpcCfg.Processing.AudioProcessing
+	transcribeStreamChunkSize = grpcCfg.Processing.TranscribeStreamChunkSize
 
-	// // uncomment this if you want to profile the program
-	// // start pprof http server on :6060
-	// go func() {
-	// 	log.Println("pprof server running on :6060")
-	// 	log.Println(http.ListenAndServe("localhost:6060", nil))
-	// }()
+	// load whisper model once
+	model, err := whisper.New(audioCfg.Whisper.Model)
+	if err != nil {
+		log.Fatalf("failed to load whisper model: %v", err)
+	}
+	defer model.Close()
+	log.Printf("whisper model loaded: %s", audioCfg.Whisper.Model)
 
-	// initialize whisper worker
-	reqChan := make(chan *transcribeRequest, 10)
-	go whisperWorker(audioCfg.Whisper.Model, reqChan)
+	// note: 
+	// - this one is to protect cgo inference calls
+	// - it makes compute serial, but concurrent preparation
+	var inferenceMu sync.Mutex
+
+	numWorkers := runtime.NumCPU()
+	if numWorkers < 2 {
+		numWorkers = 2
+		log.Fatal("total detected workers is less than 2")
+	}
+
+	// buffer channel larger to handle burst traffic
+	reqChan := make(chan *transcribeRequest, 100)
+	
+	log.Printf("starting %d whisper workers", numWorkers)
+	whisperWorkerPool(model, reqChan, numWorkers, &inferenceMu)
 
 	lis, err := net.Listen("tcp", fmt.Sprintf("%s:%d", grpcCfg.Listener.Address, grpcCfg.Listener.Port))
 	if err != nil {
