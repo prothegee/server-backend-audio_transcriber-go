@@ -30,6 +30,26 @@ idea flow
 
 ---
 
+## prequiste
+
+- go core compiler tools:
+    - [archlinux pacakge](https://archlinux.org/packages/extra/x86_64/go/)
+    - [go dev install doc](https://go.dev/doc/install)
+
+- protoc:
+    - [debian package](https://packages.debian.org/trixie/protobuf-compiler)
+    - [archlinux pacakge](https://archlinux.org/packages/extra/x86_64/protobuf/)
+
+- protoc-gen-go:
+    - `go install google.golang.org/protobuf/cmd/protoc-gen-go@latest`   
+
+- protoc-gen-go-grpc:
+    - `go install google.golang.org/grpc/cmd/protoc-gen-go-grpc@latest`
+
+<br>
+
+---
+
 ## important
 
 1. run and tested in:
