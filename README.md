@@ -27,7 +27,7 @@ idea flow:
 
 2. > if the audio process contain *forbidden* keywords -> do something (warn, err, etc.)
 
-this looks simple, but you now that when we configuring, build, and test our software it required something else in the process
+this looks simple, but you know that when we configuring, build, and test our software it required something else in the process
 
 <br>
 
