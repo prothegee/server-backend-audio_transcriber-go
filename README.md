@@ -1,6 +1,6 @@
 # backend audio transcriber go
 
-A showcase audio transcriber server in golang using audio ml model & leverage protocol buffer with grpc.
+a showcase audio transcriber server in golang using audio ml model & leverage protocol buffer with grpc.
 
 <br>
 
@@ -58,6 +58,7 @@ this looks simple, but you know that when we configuring, build, and test our so
 1. run and tested in:
 
     - go version go1.25.5 X:nodwarf5 linux/amd64
+    - base model en is provided through git-lfs, see `./assets/models/ggml-base.en.bin`
 
 2. if `config.audio.json` & `config.grpc.json` doesn't exists, copy and paste those file from .json.template to .json
 
@@ -79,7 +80,40 @@ this looks simple, but you know that when we configuring, build, and test our so
 
 ---
 
-## key features
+## build
+
+1. __local system environment/your pc:*__
+    1. build and expose/install whisper library
+    2. you can run `./dbuild.sh`, the script is as follow:
+
+--
+
+2. __*docker/podman:*__
+    1. build image container is provided, you can run:
+        - `./build-image-docker.sh` for docker, or
+        - `./build-image-podman.sh` for podman
+    2. to run build image in container si provided, you can run:
+        - `./run-container-docker.sh` for docker, or
+        - `./run-container-podman.sh` for podman
+    3. if you want to change the model you can substitue the string of `/llm/ggml-base.en.bin` from `Dockerfile` and create your own custom build/deployment
+
+---
+
+when all goes well, you should see something from the log as below
+```
+...
+YYYY/MM/DD 14:23:43 server running on 0.0.0.0:20202
+...
+```
+that log came from `docker logs -f server-backend-audio_transcriber-go` or `podman logs -f server-backend-audio_transcriber-go`
+
+<br>
+
+---
+
+## overview
+
+### key features
 
 - real-time design
 - modular structure
@@ -92,7 +126,7 @@ this looks simple, but you know that when we configuring, build, and test our so
 
 ---
 
-## trade off
+### trade-off
 
 1. concurrency vs thread safety:
     - paralellism use worker pool
@@ -111,7 +145,7 @@ this looks simple, but you know that when we configuring, build, and test our so
 
 ---
 
-## stress test
+### stress test
 
 below is a 2 hour stress test using 12 threads cpu and 32GB of RAM
 
@@ -123,7 +157,7 @@ below is a 2 hour stress test using 12 threads cpu and 32GB of RAM
 
 ---
 
-## extra
+### extra
 
 `if you had better options/approach, I would love to read/see that` - @prothegee
 
