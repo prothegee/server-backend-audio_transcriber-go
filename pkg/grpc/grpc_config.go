@@ -1,4 +1,4 @@
-package pkg_grpc_config
+package pkg_grpc
 
 import (
 	"encoding/json"

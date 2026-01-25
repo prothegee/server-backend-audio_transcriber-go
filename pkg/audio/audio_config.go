@@ -1,4 +1,4 @@
-package pkg_audio_config
+package pkg_audio
 
 import (
 	"encoding/json"
