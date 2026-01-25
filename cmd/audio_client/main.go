@@ -12,8 +12,9 @@ import (
     "syscall"
     "time"
 
-    pkg_audio_config "showcase-backend-audio_transcriber-go/pkg/audio"
-    pkg_grpc_config "showcase-backend-audio_transcriber-go/pkg/grpc"
+    pkg "showcase-backend-audio_transcriber-go/pkg"
+    pkg_audio "showcase-backend-audio_transcriber-go/pkg/audio"
+    pkg_grpc "showcase-backend-audio_transcriber-go/pkg/grpc"
     pb "showcase-backend-audio_transcriber-go/protobuf"
 
     "github.com/google/uuid"
@@ -29,15 +30,6 @@ var (
     audioBufferChannelSize int
 )
 
-func int16SliceToBytes(data []int16) []byte {
-    bytes := make([]byte, len(data)*2)
-    for i, v := range data {
-        bytes[i*2] = byte(v)
-        bytes[i*2+1] = byte(v >> 8)
-    }
-    return bytes
-}
-
 func main() {
     // generate session id (uuid v7)
     sessionID, err := uuid.NewV7()
@@ -52,11 +44,11 @@ func main() {
     }
     defer portaudio.Terminate()
 
-    grpcCfg, err := pkg_grpc_config.GrpcConfigLoad("../../config.grpc.json")
+    grpcCfg, err := pkg_grpc.GrpcConfigLoad("../../config.grpc.json")
     if err != nil {
         log.Fatalf("fail to load grpc config: %v", err)
     }
-    audioCfg, err := pkg_audio_config.AudioConfigLoad("../../config.audio.json")
+    audioCfg, err := pkg_audio.AudioConfigLoad("../../config.audio.json")
     if err != nil {
         log.Fatalf("fail to load audio config: %v", err)
     }
@@ -212,7 +204,7 @@ func main() {
                 for {
                     select {
                     case samples := <-audioChan:
-                        bytes := int16SliceToBytes(samples)
+                        bytes := pkg.Int16SliceToBytes(samples)
                         sendBuffer = append(sendBuffer, bytes...)
                     default:
                         break drainLoop

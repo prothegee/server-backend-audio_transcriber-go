@@ -12,13 +12,13 @@ import (
 	"os"
 	"os/signal"
 	"runtime"
-	"strings"
 	"sync"
 	"syscall"
 	"time"
 
-	pkg_audio_config "showcase-backend-audio_transcriber-go/pkg/audio"
-	pkg_grpc_config "showcase-backend-audio_transcriber-go/pkg/grpc"
+	pkg_audio "showcase-backend-audio_transcriber-go/pkg/audio"
+	pkg_grpc "showcase-backend-audio_transcriber-go/pkg/grpc"
+	pkg_whisper "showcase-backend-audio_transcriber-go/pkg/whisper"
 	pb "showcase-backend-audio_transcriber-go/protobuf"
 
 	whisper "github.com/ggerganov/whisper.cpp/bindings/go/pkg/whisper"
@@ -31,135 +31,9 @@ var (
 	transcribeStreamChunkSize int
 )
 
-// transcribeRequest represents a request to transcribe audio
-type transcribeRequest struct {
-	Audio     []byte
-	Resp      chan<- *transcribeResult
-	Ctx       context.Context
-	SessionID string
-}
-
-// transcribeResult is the result of transcription
-type transcribeResult struct {
-	Text     string
-	Warning  bool
-	Keywords []string
-	Err      error
-}
-
-// whisperWorkerPool initializes a pool of workers to process requests concurrently
-// we pass a *sync.Mutex to ensure only one inference runs at a time, prevent external lib SIGSEGV
-func whisperWorkerPool(model whisper.Model, reqChan <-chan *transcribeRequest, numWorkers int, inferenceMu *sync.Mutex) {
-	for i := 0; i < numWorkers; i++ {
-		go func(workerID int) {
-			log.Printf("worker #%d started", workerID)
-
-			// context per worker
-			ctx, err := model.NewContext()
-			if err != nil {
-				log.Fatalf("worker #%d failed to create whisper context: %v", workerID, err)
-			}
-
-			ctx.SetLanguage("auto")
-			ctx.SetTranslate(false)
-
-			for req := range reqChan {
-				select {
-				case <-req.Ctx.Done():
-					log.Printf("[worker #%d] context cancelled for session %s", workerID, req.SessionID)
-					continue
-				default:
-					// proceed
-				}
-
-				// cpu bound: convert bytes to floats
-				// - parallel safe
-				// - do outside the lock to maximize concurrency
-				audioFloats, err := bytesToFloat32(req.Audio)
-				if err != nil {
-					select {
-					case req.Resp <- &transcribeResult{Err: fmt.Errorf("audio conversion: %w", err)}:
-					default:
-						log.Printf("[worker #%d] resp chan full for session %s", workerID, req.SessionID)
-					}
-					continue
-				}
-
-				var result strings.Builder
-				segmentCallback := func(segment whisper.Segment) {
-					result.WriteString(segment.Text)
-				}
-
-				// cgo bound: inference (critical)
-				// - gglm whisper is not thread safe
-				// - concurrent process calls on the same backend state
-				inferenceMu.Lock()
-				err = ctx.Process(audioFloats, nil, segmentCallback, nil)
-				inferenceMu.Unlock()
-
-				if err != nil {
-					select {
-					case req.Resp <- &transcribeResult{Err: fmt.Errorf("whisper process: %w", err)}:
-					default:
-						log.Printf("[worker #%d] resp chan full for session %s", workerID, req.SessionID)
-					}
-					continue
-				}
-
-				text := strings.TrimSpace(result.String())
-				
-				if text == "" || text == "BLANK_AUDIO" || len(text) < 2 {
-					select {
-					case req.Resp <- &transcribeResult{}:
-					default:
-					}
-					continue
-				}
-
-				hasKeywords, found := containsKeywords(text, forbiddenEnKeywords)
-				res := &transcribeResult{
-					Text:     text,
-					Warning:  hasKeywords,
-					Keywords: found,
-				}
-
-				// send result, if fail just log
-				select {
-				case req.Resp <- res:
-				default:
-					log.Printf("[worker #%d] failed to send result (chan full) for session %s", workerID, req.SessionID)
-				}
-			}
-		}(i)
-	}
-}
-
-func bytesToFloat32(data []byte) ([]float32, error) {
-	if len(data)%2 != 0 {
-		return nil, fmt.Errorf("data length must be even for 16-bit audio")
-	}
-	floats := make([]float32, len(data)/2)
-	for i := range floats {
-		sample := int16(data[i*2]) | int16(data[i*2+1])<<8
-		floats[i] = float32(sample) / 32768.0
-	}
-	return floats, nil
-}
-
-func containsKeywords(text string, keywords []string) (bool, []string) {
-	found := []string{}
-	lowerText := strings.ToLower(text)
-	for _, kw := range keywords {
-		if strings.Contains(lowerText, strings.ToLower(kw)) {
-			found = append(found, kw)
-		}
-	}
-	return len(found) > 0, found
-}
-
 type server struct {
 	pb.UnimplementedSpeechServiceServer
-	reqChan chan *transcribeRequest
+	reqChan chan *pkg_audio.TranscribeRequest
 }
 
 func (s *server) TranscribeStream(stream pb.SpeechService_TranscribeStreamServer) error {
@@ -213,8 +87,8 @@ func (s *server) TranscribeStream(stream pb.SpeechService_TranscribeStreamServer
 					copy(dataToSend, audioData)
 					buffer.Reset()
 
-					respChan := make(chan *transcribeResult, 1)
-					req := &transcribeRequest{
+					respChan := make(chan *pkg_audio.TranscribeResult, 1)
+					req := &pkg_audio.TranscribeRequest{
 						Audio:     dataToSend,
 						Resp:      respChan,
 						Ctx:       ctx,
@@ -233,7 +107,7 @@ func (s *server) TranscribeStream(stream pb.SpeechService_TranscribeStreamServer
 
 					// listen for response in background
 					go func(sessionID string) {
-						var res *transcribeResult
+						var res *pkg_audio.TranscribeResult
 						select {
 						case res = <-respChan:
 							// got result
@@ -318,11 +192,11 @@ func (s *server) TranscribeStream(stream pb.SpeechService_TranscribeStreamServer
 }
 
 func main() {
-	grpcCfg, err := pkg_grpc_config.GrpcConfigLoad("../../config.grpc.json")
+	grpcCfg, err := pkg_grpc.GrpcConfigLoad("../../config.grpc.json")
 	if err != nil {
 		log.Fatalf("failed to load grpc config: %v", err)
 	}
-	audioCfg, err := pkg_audio_config.AudioConfigLoad("../../config.audio.json")
+	audioCfg, err := pkg_audio.AudioConfigLoad("../../config.audio.json")
 	if err != nil {
 		log.Fatalf("failed to load audio config: %v", err)
 	}
@@ -351,10 +225,10 @@ func main() {
 	}
 
 	// buffer channel larger to handle burst traffic
-	reqChan := make(chan *transcribeRequest, 100)
+	reqChan := make(chan *pkg_audio.TranscribeRequest, 100)
 	
 	log.Printf("starting %d whisper workers", numWorkers)
-	whisperWorkerPool(model, reqChan, numWorkers, &inferenceMu)
+	pkg_whisper.WhisperWorkerPool(model, reqChan, numWorkers, &inferenceMu, forbiddenEnKeywords)
 
 	lis, err := net.Listen("tcp", fmt.Sprintf("%s:%d", grpcCfg.Listener.Address, grpcCfg.Listener.Port))
 	if err != nil {
