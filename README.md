@@ -1,6 +1,6 @@
 # backend audio transcriber go
 
-a showcase audio transcriber server in golang using audio ml model & leverage protocol buffer with grpc.
+a real-time audio transcriber server in golang using audio ml model & leverage protocol buffer with grpc.
 
 <br>
 
