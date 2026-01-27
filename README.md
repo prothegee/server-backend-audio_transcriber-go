@@ -76,7 +76,7 @@ this looks simple, but you know that when we configuring, build, and test our so
     export C_INCLUDE_PATH="$C_INCLUDE_PATH:$HOME/include"
     ```
     
-4. use [drun-audio_client.sh](./drun-audio_client.sh) to run the client & use [drun-grpc_server.sh](./drun-grpc_server.sh)
+4. use [drun-audio_client.sh](./drun-audio_client.sh) to run the client & use [drun-grpc_server.sh](./drun-grpc_server.sh) for the grpc server
  
 5. use proper model and check the forbidden keywords, a base english model from ggml is still capable to detect specific keyword, you also may adjust this as you need, see [whisper model field](./config.audio.json.template#L3) 
 
@@ -88,7 +88,7 @@ this looks simple, but you know that when we configuring, build, and test our so
 
 1. __local system environment/your pc:*__
     1. build and expose/install whisper library
-    2. you can run `./dbuild.sh`, the script is as follow:
+    2. you can run `./dbuild.sh` to build this project
 
 --
 
@@ -99,7 +99,7 @@ this looks simple, but you know that when we configuring, build, and test our so
     2. to run build image in container si provided, you can run:
         - `./run-container-docker.sh` for docker, or
         - `./run-container-podman.sh` for podman
-    3. if you want to change the model you can substitue the string of `/llm/ggml-base.en.bin` from `Dockerfile` and create your own custom build/deployment
+    3. if you want to change the model you can substitue the string of `ggml-base.en.bin` from `Dockerfile` and create your own custom build/deployment
 
 ---
 
@@ -163,7 +163,7 @@ below is a 2 hour stress test using 12 threads cpu and 32GB of RAM
 
 ### extra
 
-`if you had better options/approach, I would love to read/see that` - @prothegee
+`if you had any better options/approach, I would love to read/see that` - @prothegee
 
 <br>
 
