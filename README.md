@@ -15,7 +15,11 @@ since they also believed their video presentation are appropriate.
 After couple attempts, the violation appear again, but now we realized that violation notification appear after they says something.
 ```
 
-<!-- RESERVED: extra information -->
+<br>
+
+[quick preview](https://youtu.be/IwSptYtNRzM)
+
+[![](https://img.youtube.com/vi/IwSptYtNRzM/hqdefault.jpg)](https://www.youtube.com/watch?v=IwSptYtNRzM)
 
 <br>
 
